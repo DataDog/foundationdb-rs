@@ -22,7 +22,7 @@ license = "MIT/Apache-2.0"
 
 [dependencies]
 env_logger = "0.9.0"
-foundationdb = { version = "*", path = "../foundationdb" }
+foundationdb = { version = "0.7.0-dd.1", path = "../foundationdb" }
 futures = "0.3.21"
 log = "0.4.17"
 rand = "0.8.5"
