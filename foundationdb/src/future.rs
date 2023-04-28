@@ -25,6 +25,7 @@
 use std::convert::TryFrom;
 use std::ffi::CStr;
 use std::fmt;
+
 use std::ops::Deref;
 use std::os::raw::c_char;
 use std::pin::Pin;
@@ -35,6 +36,7 @@ use std::sync::Arc;
 pub use crate::fdb_keys::FdbKeys;
 #[cfg_api_versions(min = 710)]
 pub use crate::mapped_key_values::MappedKeyValues;
+use crate::mem::read_unaligned_slice;
 use foundationdb_macros::cfg_api_versions;
 use foundationdb_sys as fdb_sys;
 use futures::prelude::*;
@@ -145,7 +147,7 @@ unsafe impl Send for FdbSlice {}
 impl Deref for FdbSlice {
     type Target = [u8];
     fn deref(&self) -> &Self::Target {
-        unsafe { std::slice::from_raw_parts(self.value, self.len as usize) }
+        unsafe { &*read_unaligned_slice(self.value, self.len as usize) }
     }
 }
 impl AsRef<[u8]> for FdbSlice {
@@ -221,10 +223,7 @@ impl Deref for FdbAddresses {
     fn deref(&self) -> &Self::Target {
         assert_eq_size!(FdbAddress, *const c_char);
         assert_eq_align!(FdbAddress, *const c_char);
-        unsafe {
-            &*(std::slice::from_raw_parts(self.strings, self.len as usize)
-                as *const [*const c_char] as *const [FdbAddress])
-        }
+        unsafe { &*(read_unaligned_slice(self.strings as *const FdbAddress, self.len as usize)) }
     }
 }
 impl AsRef<[FdbAddress]> for FdbAddresses {
@@ -304,12 +303,10 @@ impl Deref for FdbValues {
     fn deref(&self) -> &Self::Target {
         assert_eq_size!(FdbKeyValue, fdb_sys::FDBKeyValue);
         assert_eq_align!(FdbKeyValue, fdb_sys::FDBKeyValue);
-        unsafe {
-            &*(std::slice::from_raw_parts(self.keyvalues, self.len as usize)
-                as *const [fdb_sys::FDBKeyValue] as *const [FdbKeyValue])
-        }
+        unsafe { &*(read_unaligned_slice(self.keyvalues as *const FdbKeyValue, self.len as usize)) }
     }
 }
+
 impl AsRef<[FdbKeyValue]> for FdbValues {
     fn as_ref(&self) -> &[FdbKeyValue] {
         self.deref()
@@ -455,14 +452,12 @@ pub struct FdbKeyValue(fdb_sys::FDBKeyValue);
 impl FdbKeyValue {
     /// key
     pub fn key(&self) -> &[u8] {
-        unsafe { std::slice::from_raw_parts(self.0.key as *const u8, self.0.key_length as usize) }
+        unsafe { &*read_unaligned_slice(self.0.key as *const u8, self.0.key_length as usize) }
     }
 
     /// value
     pub fn value(&self) -> &[u8] {
-        unsafe {
-            std::slice::from_raw_parts(self.0.value as *const u8, self.0.value_length as usize)
-        }
+        unsafe { &*read_unaligned_slice(self.0.value as *const u8, self.0.value_length as usize) }
     }
 }
 

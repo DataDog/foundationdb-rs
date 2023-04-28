@@ -10,6 +10,7 @@
 
 use crate::error;
 use crate::future::FdbFutureHandle;
+use crate::mem::read_unaligned_slice;
 use crate::{FdbError, FdbResult};
 use foundationdb_sys as fdb_sys;
 use std::fmt;
@@ -42,10 +43,7 @@ impl Deref for FdbKeys {
     fn deref(&self) -> &Self::Target {
         assert_eq_size!(FdbKey, fdb_sys::FDBKey);
         assert_eq_align!(FdbKey, fdb_sys::FDBKey);
-        unsafe {
-            &*(std::slice::from_raw_parts(self.keys, self.len as usize)
-                as *const [fdb_sys::FDBKey] as *const [FdbKey])
-        }
+        unsafe { &*(read_unaligned_slice(self.keys as *const FdbKey, self.len as usize)) }
     }
 }
 
@@ -160,7 +158,7 @@ pub struct FdbKey(fdb_sys::FDBKey);
 impl FdbKey {
     /// retrieves the associated key
     pub fn key(&self) -> &[u8] {
-        unsafe { std::slice::from_raw_parts(self.0.key as *const u8, self.0.key_length as usize) }
+        unsafe { &*read_unaligned_slice(self.0.key as *const u8, self.0.key_length as usize) }
     }
 }
 
