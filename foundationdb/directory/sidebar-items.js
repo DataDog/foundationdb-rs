@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"enum":["DirectoryError","DirectoryOutput"],"struct":["DirectoryLayer","DirectoryPartition","DirectorySubspace"],"trait":["Directory"]};
