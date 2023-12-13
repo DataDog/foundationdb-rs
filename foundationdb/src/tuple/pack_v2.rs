@@ -92,11 +92,10 @@ pub trait TuplePack<I: VersionstampState, O: VersionstampState> {
 /// # Panics
 ///
 /// Panics if the encoded data size doesn't fit in `u32`.
-fn pack_to_vec<O: VersionstampState>(
-    tuple: &dyn TuplePack<Complete, O>,
+fn pack_to_vec<T: TuplePack<Complete, O>, O: VersionstampState>(
+    tuple: &T,
 ) -> io::Result<PackedTuple<Vec<u8>, O>> {
-    let mut vec = Vec::new();
-    pack_into_vec(tuple, &mut vec)
+    pack_into_vec(tuple, Vec::new())
 }
 
 /// Pack value into the given buffer
@@ -104,9 +103,9 @@ fn pack_to_vec<O: VersionstampState>(
 /// # Panics
 ///
 /// Panics if the encoded data size doesn't fit in `u32`.
-fn pack_into_vec<O: VersionstampState>(
-    tuple: &dyn TuplePack<Complete, O>,
-    output: &mut Vec<u8>,
+fn pack_into_vec<T: TuplePack<Complete, O>, O: VersionstampState>(
+    tuple: &T,
+    output: Vec<u8>,
 ) -> io::Result<PackedTuple<Vec<u8>, O>> {
     tuple.pack_root(PackedTuple {
         writer: output,
@@ -123,7 +122,7 @@ where
         &self,
         mut w: PackedTuple<W, Incomplete>,
         tuple_depth: TupleDepth,
-    ) -> io::Result<PackedTuple<Incomplete>> {
+    ) -> io::Result<PackedTuple<W, Incomplete>> {
         let offset = w.versionstamp_state.offset;
 
         // Using a placeholder packer for the Complete -> Complete state.
@@ -147,7 +146,7 @@ impl TuplePack<Complete, Incomplete> for IncompleteVersionstamp {
         &self,
         mut w: PackedTuple<W, Complete>,
         tuple_depth: TupleDepth,
-    ) -> io::Result<PackedTuple<Incomplete>> {
+    ) -> io::Result<PackedTuple<W, Incomplete>> {
         let mut bytes = [0xff; 12];
         bytes[10..].copy_from_slice(&self.user_version.to_be_bytes());
         w.write_all(&[VERSIONSTAMP])?;
@@ -238,7 +237,10 @@ fn parse_string(input: &[u8]) -> PackResult<(&[u8], Cow<str>)> {
     ))
 }
 
-fn write_bytes<'a, T: VersionstampState>(w: &mut PackedTuple<W, T>, v: &'a [u8]) -> io::Result<()>
+fn write_bytes<'a, W: io::Write, T: VersionstampState>(
+    w: &mut PackedTuple<W, T>,
+    v: &'a [u8],
+) -> io::Result<()>
 where
     PackedTuple<W, T>: WriteAll,
 {
@@ -260,7 +262,7 @@ impl TuplePack<Complete, Complete> for () {
         &self,
         mut w: PackedTuple<W, Complete>,
         tuple_depth: TupleDepth,
-    ) -> io::Result<PackedTuple<Complete>> {
+    ) -> io::Result<PackedTuple<W, Complete>> {
         if tuple_depth.depth() > 0 {
             w.write_all(&[NESTED, NIL])?;
             Ok(w)
@@ -281,17 +283,19 @@ impl<'de> TupleUnpack<'de> for () {
 }
 
 macro_rules! tuple_impls {
-    ($(($($n:tt $name:ident $v:ident)+))+) => {
+    ($((($n0:tt $name0:ident $v0:ident $o0:ident) $(($n:tt $name:ident $v:ident $i:ident $o:ident))* $out:ident))+) => {
         $(
-            impl<$($name),+> TuplePack<Complete, Complete> for ($($name,)+)
+            impl<$name0, $($name, $i: VersionstampState),*> TuplePack<Complete, $out> for ($name0, $($name,)*)
             where
-                $($name: TuplePack<Complete, Complete>,)+
+                $name0: TuplePack<Complete, $o0>,
+                $($name: TuplePack<$i, $o>,)*
             {
-                fn pack<W: io::Write>(&self, mut w: PackedTuple<W, Complete>, tuple_depth: TupleDepth) -> io::Result<PackedTuple<Complete>> {
+                fn pack<W: io::Write>(&self, mut w: PackedTuple<W, Complete>, tuple_depth: TupleDepth) -> io::Result<PackedTuple<W, $out>> {
                     if tuple_depth.depth() > 0 {
                         w.write_all(&[NESTED])?
                     }
 
+                    w = self.$n0.pack(w, tuple_depth.increment())?;
                     $(
                         w = self.$n.pack(w, tuple_depth.increment())?;
                     )*
@@ -303,20 +307,22 @@ macro_rules! tuple_impls {
                 }
             }
 
-            impl<'de, $($name),+> TupleUnpack<'de> for ($($name,)+)
+            impl<'de, $name0, $($name),*> TupleUnpack<'de> for ($name0, $($name,)*)
             where
-                $($name: TupleUnpack<'de>,)+
+                $name0: TupleUnpack<'de>,
+                $($name: TupleUnpack<'de>,)*
             {
                 fn unpack(input: &'de [u8], tuple_depth: TupleDepth) -> PackResult<(&'de [u8], Self)> {
                     let input = if tuple_depth.depth() > 0 { parse_code(input, NESTED)? } else { input };
 
+                    let (input, $v0) = $name0::unpack(input, tuple_depth.increment())?;
                     $(
                         let (input, $v) = $name::unpack(input, tuple_depth.increment())?;
                     )*
 
-                    let input = if tuple_depth.depth() > 0 { parse_code(input, NIL)? } else { input };
+                        let input = if tuple_depth.depth() > 0 { parse_code(input, NIL)? } else { input };
 
-                    let tuple = ( $($v,)* );
+                    let tuple = ( $v0, $($v,)* );
                     Ok((input, tuple))
                 }
             }
@@ -325,18 +331,29 @@ macro_rules! tuple_impls {
 }
 
 tuple_impls! {
-    (0 T0 t0)
-    (0 T0 t0 1 T1 t1)
-    (0 T0 t0 1 T1 t1 2 T2 t2)
-    (0 T0 t0 1 T1 t1 2 T2 t2 3 T3 t3)
-    (0 T0 t0 1 T1 t1 2 T2 t2 3 T3 t3 4 T4 t4)
-    (0 T0 t0 1 T1 t1 2 T2 t2 3 T3 t3 4 T4 t4 5 T5 t5)
-    (0 T0 t0 1 T1 t1 2 T2 t2 3 T3 t3 4 T4 t4 5 T5 t5 6 T6 t6)
-    (0 T0 t0 1 T1 t1 2 T2 t2 3 T3 t3 4 T4 t4 5 T5 t5 6 T6 t6 7 T7 t7)
-    (0 T0 t0 1 T1 t1 2 T2 t2 3 T3 t3 4 T4 t4 5 T5 t5 6 T6 t6 7 T7 t7 8 T8 t8)
-    (0 T0 t0 1 T1 t1 2 T2 t2 3 T3 t3 4 T4 t4 5 T5 t5 6 T6 t6 7 T7 t7 8 T8 t8 9 T9 t9)
-    (0 T0 t0 1 T1 t1 2 T2 t2 3 T3 t3 4 T4 t4 5 T5 t5 6 T6 t6 7 T7 t7 8 T8 t8 9 T9 t9 10 T10 t10)
-    (0 T0 t0 1 T1 t1 2 T2 t2 3 T3 t3 4 T4 t4 5 T5 t5 6 T6 t6 7 T7 t7 8 T8 t8 9 T9 t9 10 T10 t10 11 T11 t11)
+((0 T0 t0 Complete) Complete)
+((0 T0 t0 V1) (1 T1 t1 V1 Complete) Complete)
+((0 T0 t0 V1) (1 T1 t1 V1 V2) (2 T2 t2 V2 Complete) Complete)
+((0 T0 t0 V1) (1 T1 t1 V1 V2) (2 T2 t2 V2 V3) (3 T3 t3 V3 Complete) Complete)
+((0 T0 t0 V1) (1 T1 t1 V1 V2) (2 T2 t2 V2 V3) (3 T3 t3 V3 V4) (4 T4 t4 V4 Complete) Complete)
+((0 T0 t0 V1) (1 T1 t1 V1 V2) (2 T2 t2 V2 V3) (3 T3 t3 V3 V4) (4 T4 t4 V4 V5) (5 T5 t5 V5 Complete) Complete)
+((0 T0 t0 V1) (1 T1 t1 V1 V2) (2 T2 t2 V2 V3) (3 T3 t3 V3 V4) (4 T4 t4 V4 V5) (5 T5 t5 V5 V6) (6 T6 t6 V6 Complete) Complete)
+((0 T0 t0 V1) (1 T1 t1 V1 V2) (2 T2 t2 V2 V3) (3 T3 t3 V3 V4) (4 T4 t4 V4 V5) (5 T5 t5 V5 V6) (6 T6 t6 V6 V7) (7 T7 t7 V7 Complete) Complete)
+((0 T0 t0 V1) (1 T1 t1 V1 V2) (2 T2 t2 V2 V3) (3 T3 t3 V3 V4) (4 T4 t4 V4 V5) (5 T5 t5 V5 V6) (6 T6 t6 V6 V7) (7 T7 t7 V7 V8) (8 T8 t8 V8 Complete) Complete)
+((0 T0 t0 V1) (1 T1 t1 V1 V2) (2 T2 t2 V2 V3) (3 T3 t3 V3 V4) (4 T4 t4 V4 V5) (5 T5 t5 V5 V6) (6 T6 t6 V6 V7) (7 T7 t7 V7 V8) (8 T8 t8 V8 V9) (9 T9 t9 V9 Complete) Complete)
+((0 T0 t0 V1) (1 T1 t1 V1 V2) (2 T2 t2 V2 V3) (3 T3 t3 V3 V4) (4 T4 t4 V4 V5) (5 T5 t5 V5 V6) (6 T6 t6 V6 V7) (7 T7 t7 V7 V8) (8 T8 t8 V8 V9) (9 T9 t9 V9 V10) (10 T10 t10 V10 Complete) Complete)
+
+((0 T0 t0 Incomplete) Incomplete)
+((0 T0 t0 V1) (1 T1 t1 V1 Incomplete) Incomplete)
+((0 T0 t0 V1) (1 T1 t1 V1 V2) (2 T2 t2 V2 Incomplete) Incomplete)
+((0 T0 t0 V1) (1 T1 t1 V1 V2) (2 T2 t2 V2 V3) (3 T3 t3 V3 Incomplete) Incomplete)
+((0 T0 t0 V1) (1 T1 t1 V1 V2) (2 T2 t2 V2 V3) (3 T3 t3 V3 V4) (4 T4 t4 V4 Incomplete) Incomplete)
+((0 T0 t0 V1) (1 T1 t1 V1 V2) (2 T2 t2 V2 V3) (3 T3 t3 V3 V4) (4 T4 t4 V4 V5) (5 T5 t5 V5 Incomplete) Incomplete)
+((0 T0 t0 V1) (1 T1 t1 V1 V2) (2 T2 t2 V2 V3) (3 T3 t3 V3 V4) (4 T4 t4 V4 V5) (5 T5 t5 V5 V6) (6 T6 t6 V6 Incomplete) Incomplete)
+((0 T0 t0 V1) (1 T1 t1 V1 V2) (2 T2 t2 V2 V3) (3 T3 t3 V3 V4) (4 T4 t4 V4 V5) (5 T5 t5 V5 V6) (6 T6 t6 V6 V7) (7 T7 t7 V7 Incomplete) Incomplete)
+((0 T0 t0 V1) (1 T1 t1 V1 V2) (2 T2 t2 V2 V3) (3 T3 t3 V3 V4) (4 T4 t4 V4 V5) (5 T5 t5 V5 V6) (6 T6 t6 V6 V7) (7 T7 t7 V7 V8) (8 T8 t8 V8 Incomplete) Incomplete)
+((0 T0 t0 V1) (1 T1 t1 V1 V2) (2 T2 t2 V2 V3) (3 T3 t3 V3 V4) (4 T4 t4 V4 V5) (5 T5 t5 V5 V6) (6 T6 t6 V6 V7) (7 T7 t7 V7 V8) (8 T8 t8 V8 V9) (9 T9 t9 V9 Incomplete) Incomplete)
+((0 T0 t0 V1) (1 T1 t1 V1 V2) (2 T2 t2 V2 V3) (3 T3 t3 V3 V4) (4 T4 t4 V4 V5) (5 T5 t5 V5 V6) (6 T6 t6 V6 V7) (7 T7 t7 V7 V8) (8 T8 t8 V8 V9) (9 T9 t9 V9 V10) (10 T10 t10 V10 Incomplete) Incomplete)
 }
 
 const MAX_SZ: usize = 8;
@@ -393,7 +410,7 @@ macro_rules! impl_ux {
                 &self,
                 mut w: PackedTuple<W, Complete>,
                 _tuple_depth: TupleDepth,
-            ) -> io::Result<PackedTuple<Complete>> {
+            ) -> io::Result<PackedTuple<W, Complete>> {
                 const SZ: usize = mem::size_of::<$ux>();
                 let u = *self;
                 let n = SZ - (u.leading_zeros() as usize) / 8;
@@ -442,7 +459,7 @@ macro_rules! impl_ix {
                 &self,
                 mut w: PackedTuple<W, Complete>,
                 _tuple_depth: TupleDepth,
-            ) -> io::Result<PackedTuple<Complete>> {
+            ) -> io::Result<PackedTuple<W, Complete>> {
                 const SZ: usize = mem::size_of::<$ix>();
                 let i = *self;
                 let u = self.wrapping_abs() as $ux;
@@ -519,7 +536,7 @@ macro_rules! impl_fx {
                 &self,
                 mut w: PackedTuple<W, Complete>,
                 _tuple_depth: TupleDepth,
-            ) -> io::Result<PackedTuple<Complete>> {
+            ) -> io::Result<PackedTuple<W, Complete>> {
                 let bytes = $fx_to_ux_be_bytes(*self);
                 w.write_all(&[$code])?;
                 w.write_all(&bytes)?;
@@ -670,7 +687,7 @@ mod bigint {
             &self,
             mut w: PackedTuple<W, Complete>,
             _tuple_depth: TupleDepth,
-        ) -> io::Result<PackedTuple<Complete>> {
+        ) -> io::Result<PackedTuple<W, Complete>> {
             let n = self.bits();
             if n == 0 {
                 w.write_all(&[INTZERO])?;
@@ -767,7 +784,7 @@ where
         &self,
         mut w: PackedTuple<W, Complete>,
         tuple_depth: TupleDepth,
-    ) -> io::Result<PackedTuple<Complete>> {
+    ) -> io::Result<PackedTuple<W, Complete>> {
         self.as_slice().pack(w, tuple_depth)
     }
 }
@@ -812,7 +829,7 @@ impl<'b> TuplePack<Complete, Complete> for Bytes<'b> {
         &self,
         mut w: PackedTuple<W, Complete>,
         _tuple_depth: TupleDepth,
-    ) -> io::Result<PackedTuple<Complete>> {
+    ) -> io::Result<PackedTuple<W, Complete>> {
         w.write_all(&[BYTES])?;
         write_bytes(&mut w, self.as_ref())?;
         Ok(w)
@@ -832,14 +849,14 @@ impl<'b> TuplePack<Complete, Complete> for &'b [u8] {
         &self,
         mut w: PackedTuple<W, Complete>,
         tuple_depth: TupleDepth,
-    ) -> io::Result<PackedTuple<Complete>> {
+    ) -> io::Result<PackedTuple<W, Complete>> {
         Bytes::from(*self).pack(w, tuple_depth)
     }
 }
 
 impl TuplePack<Complete, Complete> for Vec<u8> {
     fn pack<W: io::Write>(
-        &'a self,
+        &self,
         w: PackedTuple<W, Complete>,
         tuple_depth: TupleDepth,
     ) -> io::Result<PackedTuple<W, Complete>> {
@@ -856,10 +873,10 @@ impl<'de> TupleUnpack<'de> for Vec<u8> {
 
 impl<'b> TuplePack<Complete, Complete> for &'b str {
     fn pack<W: io::Write>(
-        &'a self,
+        &self,
         mut w: PackedTuple<W, Complete>,
         _tuple_depth: TupleDepth,
-    ) -> io::Result<PackedTuple<Complete>> {
+    ) -> io::Result<PackedTuple<W, Complete>> {
         w.write_all(&[STRING])?;
         write_bytes(&mut w, self.as_bytes())?;
         Ok(w)
@@ -881,7 +898,7 @@ impl<'b> TuplePack<Complete, Complete> for Cow<'b, str> {
         &self,
         w: PackedTuple<W, Complete>,
         tuple_depth: TupleDepth,
-    ) -> io::Result<PackedTuple<Complete>> {
+    ) -> io::Result<PackedTuple<W, Complete>> {
         self.as_ref().pack(w, tuple_depth)
     }
 }
@@ -910,7 +927,7 @@ where
         &self,
         mut w: PackedTuple<W, Complete>,
         tuple_depth: TupleDepth,
-    ) -> io::Result<PackedTuple<Complete>> {
+    ) -> io::Result<PackedTuple<W, Complete>> {
         match self {
             None => {
                 if tuple_depth.depth() > 1 {
@@ -1074,7 +1091,7 @@ impl<'de> TupleUnpack<'de> for Element<'de> {
 
 impl TuplePack<Complete, Complete> for Versionstamp {
     fn pack<W: io::Write>(
-        &'a self,
+        &self,
         mut w: PackedTuple<W, Complete>,
         _tuple_depth: TupleDepth,
     ) -> io::Result<PackedTuple<W, Complete>> {
