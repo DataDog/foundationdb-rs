@@ -7,6 +7,7 @@ pub mod hca;
 mod pack;
 mod subspace;
 mod versionstamp;
+mod pack_v2;
 
 use std::borrow::Cow;
 use std::fmt::{self, Display};
