@@ -282,79 +282,91 @@ impl<'de> TupleUnpack<'de> for () {
     }
 }
 
-macro_rules! tuple_impls {
-    ($((($n0:tt $name0:ident $v0:ident $o0:ident) $(($n:tt $name:ident $v:ident $i:ident $o:ident))* $out:ident))+) => {
-        $(
-            impl<$name0, $($name, $i: VersionstampState),*> TuplePack<Complete, $out> for ($name0, $($name,)*)
-            where
-                $name0: TuplePack<Complete, $o0>,
-                $($name: TuplePack<$i, $o>,)*
-            {
-                fn pack<W: io::Write>(&self, mut w: PackedTuple<W, Complete>, tuple_depth: TupleDepth) -> io::Result<PackedTuple<W, $out>> {
-                    if tuple_depth.depth() > 0 {
-                        w.write_all(&[NESTED])?
-                    }
+macro_rules! tuple_impl {
+    (
+        $(($n:tt $name:ident $v:ident))+
+    ) => {
+        tuple_impl!(
+            Complete
+            $((U $n $name $v))+
+        );
 
-                    w = self.$n0.pack(w, tuple_depth.increment())?;
-                    $(
-                        w = self.$n.pack(w, tuple_depth.increment())?;
-                    )*
+        impl<'de, $($name),+> TupleUnpack<'de> for ($($name,)+)
+        where
+            $($name: TupleUnpack<'de>,)+
+        {
+            fn unpack(input: &'de [u8], tuple_depth: TupleDepth) -> PackResult<(&'de [u8], Self)> {
+                let input = if tuple_depth.depth() > 0 { parse_code(input, NESTED)? } else { input };
+                $(
+                    let (input, $v) = $name::unpack(input, tuple_depth.increment())?;
+                )+
 
-                    if tuple_depth.depth() > 0 {
-                        w.write_all(&[NIL])?;
-                    }
-                    Ok(w)
-                }
+                let input = if tuple_depth.depth() > 0 { parse_code(input, NIL)? } else { input };
+
+                let tuple = ( $($v,)+ );
+                Ok((input, tuple))
             }
+        }
+    };
+    (
+        Incomplete
+        $((P $n:tt $name:ident $v:ident $i:ident $o:ident))*
+        $((U $nr:tt $namer:ident $vr:ident))+
+    ) => {
+        tuple_impl!(
+            Incomplete
+            $((P $n $name $v $i $o))*
+            $((P $nr $namer $vr Incomplete Incomplete))+
+        );
+    };
 
-            impl<'de, $name0, $($name),*> TupleUnpack<'de> for ($name0, $($name,)*)
-            where
-                $name0: TupleUnpack<'de>,
-                $($name: TupleUnpack<'de>,)*
-            {
-                fn unpack(input: &'de [u8], tuple_depth: TupleDepth) -> PackResult<(&'de [u8], Self)> {
-                    let input = if tuple_depth.depth() > 0 { parse_code(input, NESTED)? } else { input };
-
-                    let (input, $v0) = $name0::unpack(input, tuple_depth.increment())?;
-                    $(
-                        let (input, $v) = $name::unpack(input, tuple_depth.increment())?;
-                    )*
-
-                        let input = if tuple_depth.depth() > 0 { parse_code(input, NIL)? } else { input };
-
-                    let tuple = ( $v0, $($v,)* );
-                    Ok((input, tuple))
+    (
+        Complete
+        $((P $n:tt $name:ident $v:ident $i:ident $o:ident))*
+        (U $nc:tt $namec:ident $vc:ident)
+        $($tail:tt)*
+    ) => {
+        tuple_impl!(
+            Incomplete
+            $((P $n $name $v $i $o))*
+            (P $nc $namec $vc Complete Incomplete)
+            $($tail)*
+        );
+        tuple_impl!(
+            Complete
+            $((P $n $name $v $i $o))*
+            (P $nc $namec $vc Complete Complete)
+            $($tail)*
+        );
+    };
+    ($out:ident $((P $n:tt $name:ident $v:ident $i:ident $o:ident))+) => {
+        impl<$($name),+> TuplePack<Complete, $out> for ($($name,)+)
+        where
+            $($name: TuplePack<$i, $o>,)+
+        {
+            fn pack<W: io::Write>(
+                &self,
+                mut w: PackedTuple<W, Complete>,
+                tuple_depth: TupleDepth
+            ) -> io::Result<PackedTuple<W, $out>> {
+                if tuple_depth.depth() > 0 {
+                    w.write_all(&[NESTED])?
                 }
+                $(
+                    let mut w = self.$n.pack(w, tuple_depth.increment())?;
+                )+
+
+                if tuple_depth.depth() > 0 {
+                    w.write_all(&[NIL])?;
+                }
+                Ok(w)
             }
-        )+
+        }
     }
 }
 
-tuple_impls! {
-((0 T0 t0 Complete) Complete)
-((0 T0 t0 V1) (1 T1 t1 V1 Complete) Complete)
-((0 T0 t0 V1) (1 T1 t1 V1 V2) (2 T2 t2 V2 Complete) Complete)
-((0 T0 t0 V1) (1 T1 t1 V1 V2) (2 T2 t2 V2 V3) (3 T3 t3 V3 Complete) Complete)
-((0 T0 t0 V1) (1 T1 t1 V1 V2) (2 T2 t2 V2 V3) (3 T3 t3 V3 V4) (4 T4 t4 V4 Complete) Complete)
-((0 T0 t0 V1) (1 T1 t1 V1 V2) (2 T2 t2 V2 V3) (3 T3 t3 V3 V4) (4 T4 t4 V4 V5) (5 T5 t5 V5 Complete) Complete)
-((0 T0 t0 V1) (1 T1 t1 V1 V2) (2 T2 t2 V2 V3) (3 T3 t3 V3 V4) (4 T4 t4 V4 V5) (5 T5 t5 V5 V6) (6 T6 t6 V6 Complete) Complete)
-((0 T0 t0 V1) (1 T1 t1 V1 V2) (2 T2 t2 V2 V3) (3 T3 t3 V3 V4) (4 T4 t4 V4 V5) (5 T5 t5 V5 V6) (6 T6 t6 V6 V7) (7 T7 t7 V7 Complete) Complete)
-((0 T0 t0 V1) (1 T1 t1 V1 V2) (2 T2 t2 V2 V3) (3 T3 t3 V3 V4) (4 T4 t4 V4 V5) (5 T5 t5 V5 V6) (6 T6 t6 V6 V7) (7 T7 t7 V7 V8) (8 T8 t8 V8 Complete) Complete)
-((0 T0 t0 V1) (1 T1 t1 V1 V2) (2 T2 t2 V2 V3) (3 T3 t3 V3 V4) (4 T4 t4 V4 V5) (5 T5 t5 V5 V6) (6 T6 t6 V6 V7) (7 T7 t7 V7 V8) (8 T8 t8 V8 V9) (9 T9 t9 V9 Complete) Complete)
-((0 T0 t0 V1) (1 T1 t1 V1 V2) (2 T2 t2 V2 V3) (3 T3 t3 V3 V4) (4 T4 t4 V4 V5) (5 T5 t5 V5 V6) (6 T6 t6 V6 V7) (7 T7 t7 V7 V8) (8 T8 t8 V8 V9) (9 T9 t9 V9 V10) (10 T10 t10 V10 Complete) Complete)
-
-((0 T0 t0 Incomplete) Incomplete)
-((0 T0 t0 V1) (1 T1 t1 V1 Incomplete) Incomplete)
-((0 T0 t0 V1) (1 T1 t1 V1 V2) (2 T2 t2 V2 Incomplete) Incomplete)
-((0 T0 t0 V1) (1 T1 t1 V1 V2) (2 T2 t2 V2 V3) (3 T3 t3 V3 Incomplete) Incomplete)
-((0 T0 t0 V1) (1 T1 t1 V1 V2) (2 T2 t2 V2 V3) (3 T3 t3 V3 V4) (4 T4 t4 V4 Incomplete) Incomplete)
-((0 T0 t0 V1) (1 T1 t1 V1 V2) (2 T2 t2 V2 V3) (3 T3 t3 V3 V4) (4 T4 t4 V4 V5) (5 T5 t5 V5 Incomplete) Incomplete)
-((0 T0 t0 V1) (1 T1 t1 V1 V2) (2 T2 t2 V2 V3) (3 T3 t3 V3 V4) (4 T4 t4 V4 V5) (5 T5 t5 V5 V6) (6 T6 t6 V6 Incomplete) Incomplete)
-((0 T0 t0 V1) (1 T1 t1 V1 V2) (2 T2 t2 V2 V3) (3 T3 t3 V3 V4) (4 T4 t4 V4 V5) (5 T5 t5 V5 V6) (6 T6 t6 V6 V7) (7 T7 t7 V7 Incomplete) Incomplete)
-((0 T0 t0 V1) (1 T1 t1 V1 V2) (2 T2 t2 V2 V3) (3 T3 t3 V3 V4) (4 T4 t4 V4 V5) (5 T5 t5 V5 V6) (6 T6 t6 V6 V7) (7 T7 t7 V7 V8) (8 T8 t8 V8 Incomplete) Incomplete)
-((0 T0 t0 V1) (1 T1 t1 V1 V2) (2 T2 t2 V2 V3) (3 T3 t3 V3 V4) (4 T4 t4 V4 V5) (5 T5 t5 V5 V6) (6 T6 t6 V6 V7) (7 T7 t7 V7 V8) (8 T8 t8 V8 V9) (9 T9 t9 V9 Incomplete) Incomplete)
-((0 T0 t0 V1) (1 T1 t1 V1 V2) (2 T2 t2 V2 V3) (3 T3 t3 V3 V4) (4 T4 t4 V4 V5) (5 T5 t5 V5 V6) (6 T6 t6 V6 V7) (7 T7 t7 V7 V8) (8 T8 t8 V8 V9) (9 T9 t9 V9 V10) (10 T10 t10 V10 Incomplete) Incomplete)
-}
+tuple_impl!{(0 T0 t0)}
+tuple_impl!{(0 T0 t0) (1 T1 t1)}
 
 const MAX_SZ: usize = 8;
 
