@@ -7,7 +7,7 @@ authors = [
     "Pierre Zemb <contact@pierrezemb.fr>"
 ]
 edition = "2021"
-rust-version = "1.65"
+rust-version = "1.70"
 
 description = """
 Bindings to the C api for FoundationDB
@@ -44,4 +44,4 @@ fdb-7_1 = []
 [dependencies]
 
 [build-dependencies]
-bindgen = "0.65.1"
+bindgen = "0.69.2"
