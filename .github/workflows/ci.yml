@@ -11,38 +11,32 @@ jobs:
   simulation:
     name: "Simulation framework"
     runs-on: ubuntu-latest
-    container:
-      image: foundationdb/build:centos7-20230825040255-3a1d89d918
     steps:
+      - name: disk space
+        run: df -h /
+
+      - name: Maximize build space
+        uses: easimon/maximize-build-space@master
+        with:
+          remove-dotnet: 'true'
+          remove-android: 'true'
+          remove-haskell: 'true'
+          overprovision-lvm: 'true'
+
+      - name: disk space
+        run: df -h /
+
       - name: Checkout repository
         uses: actions/checkout@v3
 
-      # TODO: use what is included in the image
-      - name: Download fdb clients
-        run: wget https://github.com/apple/foundationdb/releases/download/7.1.23/foundationdb-clients-7.1.23-1.el7.x86_64.rpm
-        working-directory: /tmp
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
 
-      # TODO: use what is included in the image
-      - name: install fdb clients
-        run: rpm -i /tmp/foundationdb-clients-7.1.23-1.el7.x86_64.rpm
-        working-directory: /tmp
+      - name: docker build
+        run: docker build -t simulation . -f foundationdb-simulation/examples/atomic/Dockerfile
 
-      - name: install jq
-        run: yum install -y jq
-
-      - uses: actions-rs/toolchain@v1
-        with:
-          toolchain: stable
-
-      - name: Build simulation example
-        run: source /opt/rh/devtoolset-11/enable && source /root/.cargo/env && cargo build -p foundationdb-simulation --release --example atomic
-
-      - name: Run atomic simulation example
-        run: /opt/foundationdb/old/7.1.23/bin/fdbserver-7.1.23  -r simulation -f foundationdb-simulation/examples/atomic/test_file.toml -b on --trace-format json
-
-      - name: Retrieve severity logs
-        if: ${{ failure() }}
-        run: "jq 'select( .Severity | tonumber > 30)' *.json"
+      - name: docker run
+        run: docker run --rm simulation
 
   compatibility:
     name: "Compat ${{ matrix.os }}/${{ matrix.toolchain }}/${{ matrix.fdb_feature_version }}"
@@ -51,7 +45,7 @@ jobs:
       matrix:
         os: ["ubuntu-latest", "macos-latest"]
         toolchain: ["1.70.0", "stable"]
-        fdb_feature_version: ["fdb-7_1", "fdb-7_0", "fdb-6_3", "fdb-6_2", "fdb-6_1"]
+        fdb_feature_version: ["fdb-7_3", "fdb-7_1", "fdb-7_0", "fdb-6_3", "fdb-6_2", "fdb-6_1"]
 
     runs-on: ${{ matrix.os }}
 
@@ -66,7 +60,7 @@ jobs:
       - name: Setup FoundationDB
         uses: foundationdb-rs/foundationdb-actions-install@v2.1.0
         with:
-          version: "7.1.37"
+          version: "7.3.27"
 
       - name: Enable tenant
         run: fdbcli --exec "configure single memory tenant_mode=optional_experimental"
@@ -99,7 +93,7 @@ jobs:
       - name: Install FoundationDB
         uses: foundationdb-rs/foundationdb-actions-install@v2.1.0
         with:
-          version: "7.1.37"
+          version: "7.3.27"
 
       - name: Enable tenant
         run: fdbcli --exec "configure single memory tenant_mode=optional_experimental"
@@ -110,7 +104,7 @@ jobs:
           components: rustfmt, clippy
 
       - name: Run all tests
-        run: cargo test -p foundationdb --features num-bigint,embedded-fdb-include,tenant-experimental
+        run: cargo test -p foundationdb --features num-bigint,embedded-fdb-include,tenant-experimental,fdb-7_3
 
   lint:
     name: Rustfmt / Clippy
@@ -123,7 +117,7 @@ jobs:
       - name: Install FoundationDB
         uses: foundationdb-rs/foundationdb-actions-install@v2.1.0
         with:
-          version: "7.1.37"
+          version: "7.3.27"
 
       - name: Enable tenant
         run: fdbcli --exec "configure single memory tenant_mode=optional_experimental"
@@ -137,7 +131,7 @@ jobs:
         run: cargo fmt --all -- --check
 
       - name: Clippy
-        run: cargo clippy
+        run: cargo clippy --features num-bigint,embedded-fdb-include,tenant-experimental,fdb-7_3 --no-default-features
 
   coverage:
     name: Code coverage
@@ -154,7 +148,7 @@ jobs:
       - name: Install FoundationDB
         uses: foundationdb-rs/foundationdb-actions-install@v2.1.0
         with:
-          version: "7.1.37"
+          version: "7.3.27"
 
       - name: Enable tenant
         run: fdbcli --exec "configure single memory tenant_mode=optional_experimental"
@@ -168,7 +162,7 @@ jobs:
 
       - name: Test
         # doc tests are disabled fow now as they do not compile with -Cpanic=abort
-        run: cargo test -p foundationdb --tests --no-fail-fast --target x86_64-unknown-linux-gnu
+        run: cargo test -p foundationdb --tests --no-fail-fast --target x86_64-unknown-linux-gnu --features=num-bigint,embedded-fdb-include,tenant-experimental,fdb-7_3
 
       - name: Setup bindingtester
         run: scripts/setup_bindingtester.sh target/x86_64-unknown-linux-gnu/debug/bindingtester
